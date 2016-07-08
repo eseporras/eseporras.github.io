@@ -1,0 +1,173 @@
+---
+title: 'Practical Machine Learning: Course Project'
+author: "Pablo Porras Millán"
+date: "July the 8th, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Synopsis
+
+This project deals with the prediction of specific types of movements as described in the dataset. Here is the background information from the course website for reference:
+
+*"Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). "*
+
+## Part 1: Load data and exploratory analysis
+
+#### Load required libraries
+
+```{r libraries load-up,warning=FALSE,message=FALSE}
+require(data.table)
+require(ggplot2)
+require(caret)
+```
+
+#### Getting training and test datasets
+
+```{r load_data,warning=FALSE,message=FALSE}
+if (!file.exists("./source_data/pml-training.csv")){
+        download.file(url="https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", method="curl",destfile = "./source_data/pml-training.csv")
+}
+
+if (!file.exists("./source_data/pml-testing.csv")){
+        download.file(url="https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", method="curl",destfile = "./source_data/pml-testing.csv")
+}
+
+training <- fread("./source_data/pml-training.csv",header=T,sep=",",data.table = F)
+
+testing <- fread("./source_data/pml-testing.csv",header=T,sep=",",data.table = F)
+```
+
+#### Exploring and formatting the training dataset
+
+```{r dataset characterisics,comment=NA}
+dim(training)
+str(training)
+```
+
+There is a large number of variables, which makes exploratory analysis challenging. I first need to be sure they are all the right variable type, since some of them are recognized as *'character'* type. 
+
+```{r setting up variable type,comment=NA,warning=FALSE}
+vartype <- c("factor","factor","integer","integer","character","factor","factor","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","factor")
+
+for(i in 1:length(vartype)) { 
+        if (vartype[i] == "numeric") { 
+                training[,i] <- as.numeric(training[,i])
+        }
+        else if (vartype[i] == "character"){
+                training[,i] <- as.character(training[,i])
+        }
+        else if (vartype[i] == "factor"){
+                training[,i] <- as.factor(training[,i])
+        }
+}
+
+training$cvtd_timestamp <- strftime(training$cvtd_timestamp, "%m/%d/%y %H:%M")
+
+for(i in 1:length(vartype)) { 
+        if (vartype[i] == "numeric") { 
+                testing[,i] <- as.numeric(testing[,i])
+        }
+        else if (vartype[i] == "character"){
+                testing[,i] <- as.character(testing[,i])
+        }
+        else if (vartype[i] == "factor"){
+                testing[,i] <- as.factor(testing[,i])
+        }
+}
+
+testing$cvtd_timestamp <- strftime(testing$cvtd_timestamp, "%m/%d/%y %H:%M")
+```
+
+Then I discard those variables that are the result of aggregating raw data, they can be easily found out because they contain a lot of NA values. 
+
+There are also some variables such as the user tested and the time where the measurements were taken that should not be taken into account, since we do not want to predict based on the specific person that is performing the task or the time of the day where it is performed. I exclude those from the cleaned datasets as well.
+
+```{r select variables,,comment=NA,warning=FALSE}
+# NA (aggregated) clean
+
+count_na_col <- function(x,c){
+        sum(is.na(x[,c]))
+}
+
+number_nas <- c()
+for (i in 1:ncol(training)){
+        number_nas <- c(number_nas,count_na_col(training,i))
+}
+
+sel_cols <- which(number_nas == 0)
+
+train_clean <- training[,sel_cols]
+test_clean <- testing[,sel_cols]
+
+# Irrelevant variables
+discard <- c(1:7)
+train_clean <- train_clean[,-discard]
+test_clean <- test_clean[,-discard]
+```
+
+The variables left are all movement measurements done in different areas (arm, forearm, belt and dumbbell). I will use this to train my model, but let's explore the dataset a bit first.
+
+#### Exploratory analysis of the data
+
+Given the sheer number of variables given in the dataset, it is a bit challenging to try to explore them. I decide to represent them as scatter plots to try and figure obvious patterns ofr each of the five activity categories we have. 
+
+```{r dataset_summary,warning=FALSE,message=FALSE,fig.height=6,fig.width=12}
+long_train_clean <- melt(setDT(train_clean), id.vars=c("classe"), variable.name="variable")
+
+pd <- position_dodge(0.7)
+
+g <- ggplot(long_train_clean,aes(x=variable,y=value,fill=classe))
+g <- g + geom_point(aes(colour=classe,aplha=0.01),size=0.5,position=pd)
+g <- g + ylim(-1000,1000)
+g <- g + theme(axis.text.x  = element_text(angle=90))
+g
+
+```
+
+I cannot find an obvious pattern that would allow to identify strong vs weak predictors, so I assume the predictive power will come from combining multiple weak predictors. 
+
+## Part 2: Building the model 
+
+I decide to apply a boosting algorithm, assuming each of the multiple variables will be a weak predictor and deriving a strong predictor out of them. I decide for the *stochastic gradient boosting* algorithm implementation provided by the caret package (a.k.a. *'gbm'*). This algorithm combines decision trees as a weak predictors (check https://en.wikipedia.org/wiki/Gradient_boosting for more info). 
+
+I use k-fold cross-validation (10 levels, as it seems to be an accepted standard) in order to infer a general value of accuracy for the model. 
+
+#### k-fold cross-validation and gbm model fit
+```{r crossvalidation_train,message=FALSE,warning=FALSE,results="hide"}
+ctrl <- trainControl(train_clean,method="cv",number=10,savePredictions = T)
+modFit <- train(classe ~.,method="gbm",data=train_clean,trControl=ctrl)
+```
+
+#### Obtaining predictions and estimated accuracy
+
+```{r predictions,message=FALSE,warning=FALSE,comment=NA}
+tpreds <- predict(modFit,train_clean)
+
+train_tpreds<- cbind(train_clean,tpreds)
+
+train_confMatrix <- confusionMatrix(train_tpreds$tpreds,train_tpreds$classe)
+train_confMatrix
+```
+
+I obtain an estimated accuracy of 0.97, quite high. Cross-validation should have taken away some of the problems of overfitting, but it remains to test the model against the test set. 
+
+## Part 3: Test the model
+
+Now let's test the prediction over the test dataset. 
+
+```{r model_test}
+preds <- predict(modFit,test_clean)
+
+test_preds<- data.frame(cbind(problem_id=test_clean$problem_id,prediction=as.character(preds)))
+
+test_preds
+```
+
+After taking the quiz assignment all predictions turned out to be true. Given the reduced size of the test set, it is not possible to extract a realistic value of accuracy for the model and the estimated value of 0.97 remains as my best estimate. 
+
+********************************************
